@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
 #include <zlib.h>
 
 #define PNG_MAGIC 0x0a1a0a0d474e5089
@@ -20,21 +21,28 @@ typedef struct ChunkIHDR {
 
 bool isFilePng(std::ifstream& img);
 void parseIHDR(std::ifstream& img, ChunkIHDR *chunk);
-void findIDAT(std::ifstream& img, uint32_t *sizeIDAT);
+int findIDAT(std::ifstream& img, uint32_t *sizeIDAT);
 
-std::vector<unsigned char> readIDATChunk(std::ifstream& img, size_t len);
-std::vector<unsigned char> decompressIDATChunk(std::vector<unsigned char> compressedData);
-std::vector<unsigned char> compressIDATChunk(std::vector<unsigned char> decompressedData);
+std::vector<uint8_t> readIDATChunk(std::ifstream& img, size_t len);
+std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, int maxOutputLen);
+std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData);
+void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
+void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
+void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen);
 
-void createPNG(std::vector<unsigned char> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos);
+void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen);
+void processRestOfFile(std::ifstream& img, FILE *output, int *currFileIndex, int maxOutputLen);
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
+    if (argc != 3) {
         std::cout << "Usage: <picture filepath> <message>";
         exit(0);
     }
 
-    std::ifstream img(argv[1], std::ios::binary);
+    char *pngName = argv[1];
+    std::string message = argv[2];
+
+    std::ifstream img(pngName, std::ios::binary);
     if (!isFilePng(img)) {
         std::cout << "File is not a PNG\n";
         exit(0);
@@ -47,33 +55,43 @@ int main(int argc, char **argv) {
         std::cout << "Please select other PNG image!\n";
         exit(0);
     }
+    // THE 4 IS HARDCODED - PART OF COLOURTYPE 6
+    int bytesPerPixel = chunkIHDR.colourWidth * 4 / 8;
 
     uint32_t sizeIDAT;
-    findIDAT(img, &sizeIDAT);
+    if (!findIDAT(img, &sizeIDAT)) {
+        std::cout << "IDAT Chunk not found\n";
+        exit(0);
+    }
 
     size_t IDATDataStartPos = img.tellg();
-    // std::cout << "Position index of 1 byte after T of IDAT: " << img.tellg() << '\n';
 
-    std::vector<unsigned char> compressedData= readIDATChunk(img, sizeIDAT);
-    std::vector<unsigned char> decompressedData = decompressIDATChunk(compressedData);
+    std::vector<uint8_t> compressedData = readIDATChunk(img, sizeIDAT);
+
+    int maxOutputLen = (chunkIHDR.height * chunkIHDR.width * 4) + chunkIHDR.height;
+    std::vector<uint8_t> decompressedData = decompressIDATChunk(compressedData, maxOutputLen);
 
     // + 1 for filter byte
+    // THE 4 IS HARDCODED - PART OF COLOURTYPE 6
     int scanlineLen = (chunkIHDR.width * 4) + 1;
 
-    std::vector<unsigned char> recompressedData = compressIDATChunk(decompressedData);
+    processFilter(decompressedData, scanlineLen, bytesPerPixel);
 
-    // for (unsigned char c : recompressedData) {
-    //     std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(c)) << " ";
+    embedMessage(decompressedData, message, scanlineLen);
+
+    // for (uint8_t c : decompressedData) {
+    //     std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c) << " ";
     // }
 
-    // for (unsigned char c : decompressedData) {
-    //     std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(c)) << " ";
-    // }
+    std::vector<uint8_t> recompressedData = compressIDATChunk(decompressedData);
 
+    // for (uint8_t c : recompressedData) {
+    //     std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c) << " ";
+    // }
 
     // Consider finding max size
 
-    createPNG(compressedData, argv[1], img, IDATDataStartPos);
+    createPNG(recompressedData, pngName, img, IDATDataStartPos, sizeIDAT, maxOutputLen);
 
     img.close();
 }
@@ -111,7 +129,7 @@ void parseIHDR(std::ifstream& img, ChunkIHDR *chunk) {
     img.read(reinterpret_cast<char *>(&(chunk->enlacementMethod)), 1);
 }
 
-void findIDAT(std::ifstream& img, uint32_t *sizeIDAT) {
+int findIDAT(std::ifstream& img, uint32_t *sizeIDAT) {
     char byte;
     while(img.get(byte)) {
         if (byte == 'I') {
@@ -123,7 +141,7 @@ void findIDAT(std::ifstream& img, uint32_t *sizeIDAT) {
                 img.read(reinterpret_cast<char *>(sizeIDAT), 4);
                 *sizeIDAT = __builtin_bswap32(*sizeIDAT);
                 img.seekg(4, std::ios::cur); 
-                return;
+                return 1;
             }
             // Go back 3 bytes in case we get consecutive I
             img.seekg(-3, std::ios::cur); 
@@ -131,18 +149,17 @@ void findIDAT(std::ifstream& img, uint32_t *sizeIDAT) {
     }
 
     // IDAT not found
-    std::cout << "IDAT Chunk not found\n";
-    exit(0);
+    return 0;
 }
 
-std::vector<unsigned char> readIDATChunk(std::ifstream& img, size_t len) {
-    std::vector<unsigned char> compressedData(len);
+std::vector<uint8_t> readIDATChunk(std::ifstream& img, size_t len) {
+    std::vector<uint8_t> compressedData(len);
     img.read(reinterpret_cast<char *>(compressedData.data()), len);
     return compressedData;
 }
 
-std::vector<unsigned char> decompressIDATChunk(std::vector<unsigned char> compressedData) {
-    std::vector<unsigned char> decompressedData;
+std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, int maxOutputLen) {
+    std::vector<uint8_t> decompressedData;
 
     z_stream inflateStream;
     memset(&inflateStream, 0, sizeof(z_stream));
@@ -157,31 +174,47 @@ std::vector<unsigned char> decompressIDATChunk(std::vector<unsigned char> compre
         exit(0);
     }
 
-    int bufferLen = compressedData.size();
-    unsigned char *buffer = (unsigned char *) malloc(bufferLen);
+    int bufferLen = maxOutputLen;
+    uint8_t *buffer = (uint8_t *) malloc(bufferLen);
 
-    do {
-        inflateStream.avail_out = bufferLen;
-        inflateStream.next_out = buffer;
+    // do {
+    //     inflateStream.avail_out = bufferLen;
+    //     inflateStream.next_out = buffer;
 
-        ret = inflate(&inflateStream, Z_NO_FLUSH);
-        if (ret != Z_OK && ret != Z_STREAM_END) {
-            printf("Error: inflate returned %d\n", ret);
-            free(buffer);
-            inflateEnd(&inflateStream);
-            exit(0);
-        }
+    //     ret = inflate(&inflateStream, Z_NO_FLUSH);
+    //     if (ret != Z_OK && ret != Z_STREAM_END) {
+    //         printf("Error: inflate returned %d\n", ret);
+    //         free(buffer);
+    //         inflateEnd(&inflateStream);
+    //         exit(0);
+    //     }
 
-        decompressedData.insert(decompressedData.end(), buffer, buffer + (bufferLen - inflateStream.avail_out));
-    } while (inflateStream.avail_out == 0);
+    //     decompressedData.insert(decompressedData.end(), buffer, buffer + (bufferLen - inflateStream.avail_out));
+    // } while (inflateStream.avail_out == 0);
+
+    inflateStream.avail_out = bufferLen;
+    inflateStream.next_out = buffer;
+
+    ret = inflate(&inflateStream, Z_SYNC_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END) {
+        printf("Error: inflate returned %d\n", ret);
+        exit(0);
+    }
+
+    if (inflateStream.avail_in != 0) {
+        printf("Error: inflate did not consume all input\n");
+        exit(0);
+    }
+
+    decompressedData.insert(decompressedData.end(), buffer, buffer + (bufferLen - inflateStream.avail_out));
 
     inflateEnd(&inflateStream);
     free(buffer);
     return decompressedData;
 }
 
-std::vector<unsigned char> compressIDATChunk(std::vector<unsigned char> decompressedData) {
-    std::vector<unsigned char> compressedData;
+std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData) {
+    std::vector<uint8_t> compressedData;
 
     z_stream deflateStream;
     memset(&deflateStream, 0, sizeof(z_stream));
@@ -190,14 +223,14 @@ std::vector<unsigned char> compressIDATChunk(std::vector<unsigned char> decompre
     deflateStream.avail_in = decompressedData.size();
     deflateStream.next_in = (Bytef *) decompressedData.data();
 
-    int ret = deflateInit(&deflateStream, -1);
+    int ret = deflateInit(&deflateStream, Z_DEFAULT_COMPRESSION);
     if (ret != Z_OK) {
         std::cout << "Error with deflateInit: " << ret << '\n';
         exit(0);
     }
 
     int bufferLen = decompressedData.size();
-    unsigned char *buffer = (unsigned char *) malloc(bufferLen);
+    uint8_t *buffer = (uint8_t *) malloc(bufferLen);
 
     do {
         deflateStream.avail_out = bufferLen;
@@ -219,26 +252,144 @@ std::vector<unsigned char> compressIDATChunk(std::vector<unsigned char> decompre
     return compressedData;
 }
 
-// std::vector<unsigned char> processFilterSub(std::vector<unsigned char> data, int scanlineLen) {
+void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel) {
+    for (int i = 0; i < data.size(); i += scanlineLen) {
+        switch (data[i]) {
+            case 0:
+                break;
+            case 1:
+                processFilterSub(data, i + 1, scanlineLen - 1, bytesPerPixel);
+                break;
+            default:
+                std::cout << "Unimplemented filter type: " << (int) data[i] << '\n';
+                exit(0);
+        }
+    }
+}
 
-// }
+void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
+    // start on 2nd image pixel
+    for (int i = startPos; i < startPos + len; i++) {
+        if (i < startPos + bytesPerPixel) {
+            continue;
+        }
 
-void createPNG(std::vector<unsigned char> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos) {
+        uint8_t prevPixel = data[i - bytesPerPixel];
+        data[i] += prevPixel;
+    }
+}
+
+void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen) {
+    // TODO: Correctly calculate this
+    if (data.size() <= message.length() * 8) {
+        std::cout << "Message is too long!\n";
+        exit(0);
+    }
+
+    std::vector<uint8_t> messageBits;
+
+    if (message.length() > 255) {
+        std::cout << "Message is too long!\n";
+        exit(0);
+    }
+
+    uint8_t msgLen = message.length();
+    for (int i = 7; i >= 0; i--) {
+        messageBits.push_back((msgLen >> i) & 1);
+    }
+
+    for (uint8_t c : message) {
+        for (int i = 7; i >= 0; i--) {
+            messageBits.push_back((c >> i) & 1);
+        }
+    }
+
+    for (int dataIndex = 1, bitsIndex = 0; bitsIndex < messageBits.size(); dataIndex++, bitsIndex++) {
+        // skip filter bytes
+        if (dataIndex % scanlineLen == 0) {
+            continue;
+        }
+        // 11111110
+        data[dataIndex] = (data[dataIndex] & 0xFE) | messageBits[bitsIndex];
+    }
+}
+
+void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen) {
     // b indicates binary 
     FILE *original = fopen(originalFileName, "rb");
     FILE *output = fopen("output.png", "wb");
 
+    // Go back to right before length bytes
     int headerSize = IDATDataStartPos - 8;
 
-    unsigned char *buffer = (unsigned char *)malloc(headerSize);
-    fread(buffer, sizeof(unsigned char), headerSize, original);
-    fwrite(buffer, sizeof(unsigned char), headerSize, output);
+    uint8_t *buffer = (uint8_t *)malloc(headerSize);
+    fread(buffer, sizeof(uint8_t), headerSize, original);
+    fwrite(buffer, sizeof(uint8_t), headerSize, output);
 
-    img.seekg(headerSize, std::ios::beg);
+    uint32_t length = compressedData.size();
+    uint32_t lengthBigEndian = __builtin_bswap32(length);
+    fwrite(&lengthBigEndian, sizeof(uint32_t), 1, output);
 
-    uint32_t chunkSize;
-    img.read(reinterpret_cast<char *>(&chunkSize), 4);
-    chunkSize = __builtin_bswap32(chunkSize);
+    std::vector<uint8_t> vectorIDAT = {'I', 'D', 'A', 'T'};
 
-    std::cout << chunkSize << '\n';
+    uint32_t crc = 0;
+
+    for (uint8_t c : vectorIDAT) {
+        fwrite(&c, sizeof(uint8_t), 1, output);
+        crc = crc32(crc, &c, 1);
+    }   
+    
+    for (uint8_t c : compressedData) {
+        fwrite(&c, sizeof(uint8_t), 1, output);
+        crc = crc32(crc, &c, 1);
+    }
+
+    uint32_t crcBigEndian = __builtin_bswap32(crc);
+    fwrite(&crcBigEndian, sizeof(uint32_t), 1, output);
+
+    // headerSize + length + type + data + crc + length difference
+    int currFileIndex = headerSize + 4 + 4 + length + 4 + (originalIDATChunkSize - length);
+
+    //processRestOfFile(img, output, &currFileIndex, maxOutputLen);
+    img.seekg(currFileIndex, std::ios::beg);
+
+    char byte;
+    while (img.get(byte)) {
+        fwrite(&byte, sizeof(char), 1, output);
+    }
+}
+
+void processRestOfFile(std::ifstream& img, FILE *output, int *currFileIndex, int maxOutputLen) {
+    uint32_t sizeIDAT;
+    std::vector<uint8_t> compressedData;
+    std::vector<uint8_t> decompressedData;
+    std::vector<uint8_t> recompressedData;
+
+    while(findIDAT(img, &sizeIDAT)) {
+        compressedData = readIDATChunk(img, sizeIDAT);
+        decompressedData = decompressIDATChunk(compressedData, maxOutputLen);
+        recompressedData = compressIDATChunk(decompressedData);
+
+        uint32_t length = recompressedData.size();
+        uint32_t lengthBigEndian = __builtin_bswap32(length);
+        fwrite(&lengthBigEndian, sizeof(uint32_t), 1, output);
+
+        std::vector<uint8_t> vectorIDAT = {'I', 'D', 'A', 'T'};
+        uint32_t crc = 0;
+        
+        for (uint8_t c : vectorIDAT) {
+            fwrite(&c, sizeof(uint8_t), 1, output);
+            crc = crc32(crc, &c, 1);
+        }   
+        
+        for (uint8_t c : recompressedData) {
+            fwrite(&c, sizeof(uint8_t), 1, output);
+            crc = crc32(crc, &c, 1);
+        }
+
+        uint32_t crcBigEndian = __builtin_bswap32(crc);
+        fwrite(&crcBigEndian, sizeof(uint32_t), 1, output);
+
+        *currFileIndex += 4 + 4 + sizeIDAT + 4;
+    }
 }
