@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <zlib.h>
+#include <string>
 
 #define PNG_MAGIC 0x0a1a0a0d474e5089
 
@@ -33,14 +34,20 @@ void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineL
 void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen);
 void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img);
 
+void decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen);
+
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        std::cout << "Usage: <picture filepath> <message>";
+    if (argc < 3) {
+        std::cout << "Usage: <picture filepath> <mode> <message if encoding>\n";
         exit(0);
     }
 
     char *pngName = argv[1];
-    std::string message = argv[2];
+    int mode = std::atoi(argv[2]);
+    std::string message;
+    if (mode == 0) {
+        message = argv[3];
+    }   
 
     std::ifstream img(pngName, std::ios::binary);
     if (!isFilePng(img)) {
@@ -77,6 +84,13 @@ int main(int argc, char **argv) {
     int scanlineLen = (chunkIHDR.width * 4) + 1;
 
     processFilter(decompressedData, scanlineLen, bytesPerPixel);
+
+    if (mode == 1) {
+        //DECODE
+        decodeMessage(decompressedData, scanlineLen);
+        exit(0);
+    }
+
     embedMessage(decompressedData, message, scanlineLen);
 
     std::vector<uint8_t> recompressedData = compressIDATChunk(decompressedData);
@@ -350,4 +364,36 @@ void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img) {
         newCompressedData = readIDATChunk(img, sizeIDAT);
         compressedData.insert(compressedData.end(), newCompressedData.begin(), newCompressedData.end());
     }
+}
+
+void decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen) {
+    uint8_t messageLenByte = 0;
+
+    for (int i = 1; i <= 8; i++) {
+        uint8_t byte = decompressedData[i];
+        messageLenByte |= (byte & 1);
+
+        if (i < 8) {
+            messageLenByte <<= 1;
+        }
+    }
+
+    int messageLen = static_cast<int>(messageLenByte);
+    std::vector<uint8_t> messageVec;
+
+    for (int i = 1; i <= messageLen; i++) {
+        uint8_t letter = 0;
+        for (int j = 1; j <= 8; j++) {
+            uint8_t byte = decompressedData[j + (8 * i)];
+            letter |= (byte & 1);
+
+            if (j < 8) {
+                letter <<= 1;
+            }
+        }
+        messageVec.push_back(letter);
+    }
+
+    std::string messageString = std::string(messageVec.begin(), messageVec.end());
+    std::cout << messageString << '\n';
 }
