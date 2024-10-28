@@ -30,6 +30,8 @@ std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData);
 void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
 void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
 void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen);
+void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
+void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
 
 void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen);
 void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img);
@@ -92,6 +94,7 @@ int main(int argc, char **argv) {
     }
 
     embedMessage(decompressedData, message, scanlineLen);
+    refilter(decompressedData, scanlineLen, bytesPerPixel);
 
     std::vector<uint8_t> recompressedData = compressIDATChunk(decompressedData);
 
@@ -255,7 +258,7 @@ void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixe
             case 0:
                 break;
             case 1:
-                processFilterSub(data, i + 1, scanlineLen - 1, bytesPerPixel);
+                processFilterSub(data, i + 1, scanlineLen, bytesPerPixel);
                 break;
             default:
                 std::cout << "Unimplemented filter type: " << (int) data[i] << '\n';
@@ -266,13 +269,43 @@ void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixe
 
 void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
     // start on 2nd image pixel
-    for (int i = startPos; i < startPos + len; i++) {
+    for (int i = startPos; i < startPos + len - 1; i++) {
         if (i < startPos + bytesPerPixel) {
             continue;
         }
 
         uint8_t prevPixel = data[i - bytesPerPixel];
         data[i] += prevPixel;
+    }
+}
+
+void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel) {
+    for (int i = 0; i < data.size(); i += scanlineLen) {
+        switch (data[i]) {
+            case 0:
+                break;
+            case 1:
+                refilterSub(data, i + 1, scanlineLen, bytesPerPixel);
+                break;
+            default:
+                std::cout << "Unimplemented filter type: " << (int) data[i] << '\n';
+                exit(0);
+        }
+    }
+}
+
+void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
+    uint8_t *orig = (uint8_t *)malloc(data.size());
+    memcpy(orig, data.data(), data.size());
+    
+    // start on 2nd image pixel
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        if (i < startPos + bytesPerPixel) {
+            continue;
+        }
+
+        uint8_t prevPixel = orig[i - bytesPerPixel];
+        data[i] -= prevPixel;
     }
 }
 
