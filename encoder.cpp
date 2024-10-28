@@ -31,7 +31,7 @@ void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int byt
 void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen);
 
 void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen);
-void processRestOfFile(std::ifstream& img, FILE *output, int *currFileIndex, int maxOutputLen);
+void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img);
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -65,8 +65,9 @@ int main(int argc, char **argv) {
     }
 
     size_t IDATDataStartPos = img.tellg();
-
     std::vector<uint8_t> compressedData = readIDATChunk(img, sizeIDAT);
+
+    readRestIDATs(compressedData, img);
 
     int maxOutputLen = (chunkIHDR.height * chunkIHDR.width * 4) + chunkIHDR.height;
     std::vector<uint8_t> decompressedData = decompressIDATChunk(compressedData, maxOutputLen);
@@ -76,12 +77,7 @@ int main(int argc, char **argv) {
     int scanlineLen = (chunkIHDR.width * 4) + 1;
 
     processFilter(decompressedData, scanlineLen, bytesPerPixel);
-
     embedMessage(decompressedData, message, scanlineLen);
-
-    // for (uint8_t c : decompressedData) {
-    //     std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c) << " ";
-    // }
 
     std::vector<uint8_t> recompressedData = compressIDATChunk(decompressedData);
 
@@ -166,7 +162,7 @@ std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, in
 
     // Bytef is just a typedef for an uint8_t
     inflateStream.avail_in = compressedData.size();
-    inflateStream.next_in = (Bytef *) compressedData.data();
+    inflateStream.next_in = compressedData.data();
 
     int ret = inflateInit(&inflateStream) ;
     if (ret != Z_OK) {
@@ -177,32 +173,19 @@ std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, in
     int bufferLen = maxOutputLen;
     uint8_t *buffer = (uint8_t *) malloc(bufferLen);
 
-    // do {
-    //     inflateStream.avail_out = bufferLen;
-    //     inflateStream.next_out = buffer;
-
-    //     ret = inflate(&inflateStream, Z_NO_FLUSH);
-    //     if (ret != Z_OK && ret != Z_STREAM_END) {
-    //         printf("Error: inflate returned %d\n", ret);
-    //         free(buffer);
-    //         inflateEnd(&inflateStream);
-    //         exit(0);
-    //     }
-
-    //     decompressedData.insert(decompressedData.end(), buffer, buffer + (bufferLen - inflateStream.avail_out));
-    // } while (inflateStream.avail_out == 0);
-
     inflateStream.avail_out = bufferLen;
     inflateStream.next_out = buffer;
 
     ret = inflate(&inflateStream, Z_SYNC_FLUSH);
     if (ret != Z_OK && ret != Z_STREAM_END) {
         printf("Error: inflate returned %d\n", ret);
+        inflateEnd(&inflateStream);
         exit(0);
     }
 
     if (inflateStream.avail_in != 0) {
         printf("Error: inflate did not consume all input\n");
+        inflateEnd(&inflateStream);
         exit(0);
     }
 
@@ -221,7 +204,7 @@ std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData) {
 
     // Bytef is just a typedef for an uint8_t
     deflateStream.avail_in = decompressedData.size();
-    deflateStream.next_in = (Bytef *) decompressedData.data();
+    deflateStream.next_in = decompressedData.data();
 
     int ret = deflateInit(&deflateStream, Z_DEFAULT_COMPRESSION);
     if (ret != Z_OK) {
@@ -359,37 +342,12 @@ void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std:
     }
 }
 
-void processRestOfFile(std::ifstream& img, FILE *output, int *currFileIndex, int maxOutputLen) {
+void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img) {
     uint32_t sizeIDAT;
-    std::vector<uint8_t> compressedData;
-    std::vector<uint8_t> decompressedData;
-    std::vector<uint8_t> recompressedData;
+    std::vector<uint8_t> newCompressedData;
 
     while(findIDAT(img, &sizeIDAT)) {
-        compressedData = readIDATChunk(img, sizeIDAT);
-        decompressedData = decompressIDATChunk(compressedData, maxOutputLen);
-        recompressedData = compressIDATChunk(decompressedData);
-
-        uint32_t length = recompressedData.size();
-        uint32_t lengthBigEndian = __builtin_bswap32(length);
-        fwrite(&lengthBigEndian, sizeof(uint32_t), 1, output);
-
-        std::vector<uint8_t> vectorIDAT = {'I', 'D', 'A', 'T'};
-        uint32_t crc = 0;
-        
-        for (uint8_t c : vectorIDAT) {
-            fwrite(&c, sizeof(uint8_t), 1, output);
-            crc = crc32(crc, &c, 1);
-        }   
-        
-        for (uint8_t c : recompressedData) {
-            fwrite(&c, sizeof(uint8_t), 1, output);
-            crc = crc32(crc, &c, 1);
-        }
-
-        uint32_t crcBigEndian = __builtin_bswap32(crc);
-        fwrite(&crcBigEndian, sizeof(uint32_t), 1, output);
-
-        *currFileIndex += 4 + 4 + sizeIDAT + 4;
+        newCompressedData = readIDATChunk(img, sizeIDAT);
+        compressedData.insert(compressedData.end(), newCompressedData.begin(), newCompressedData.end());
     }
 }
