@@ -307,6 +307,8 @@ void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPer
         uint8_t prevPixel = orig[i - bytesPerPixel];
         data[i] -= prevPixel;
     }
+
+    free(orig);
 }
 
 void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen) {
