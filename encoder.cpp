@@ -7,6 +7,12 @@
 #include <cstdio>
 #include <zlib.h>
 #include <string>
+#include <openssl/evp.h>
+#include <openssl/aes.h>
+#include <openssl/conf.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
+#include "encoder.h"
 
 #define PNG_MAGIC 0x0a1a0a0d474e5089
 
@@ -20,38 +26,126 @@ typedef struct ChunkIHDR {
     uint8_t enlacementMethod;
 } ChunkIHDR;
 
+std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *message, int msgLen, char *outputFile);
 bool isFilePng(std::ifstream& img);
 void parseIHDR(std::ifstream& img, ChunkIHDR *chunk);
 int findIDAT(std::ifstream& img, uint32_t *sizeIDAT);
-
 std::vector<uint8_t> readIDATChunk(std::ifstream& img, size_t len);
 std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, int maxOutputLen);
 std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData);
 void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
 void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
-void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen);
+void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen);
 void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
 void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
-
-void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen);
+void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen, char *outputFileString);
 void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img);
+std::vector<uint8_t> decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen);
 
-void decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen);
+void encodePlaintext(char *inputFile, unsigned char *message, int msgLen, char *outputFile) {
+    steganographer(ENCODE, inputFile, message, msgLen, outputFile);
+}
 
-int main(int argc, char **argv) {
-    if (argc < 3) {
-        std::cout << "Usage: <picture filepath> <mode> <message if encoding>\n";
-        exit(0);
+std::string decodePlaintext(char *inputFile) {
+    std::vector<uint8_t> outputVec = steganographer(DECODE, inputFile, NULL, 0, NULL);
+    std::string outputStr(outputVec.begin(), outputVec.end());
+    return outputStr;
+}
+
+void handleEVPErrors(void) {
+    ERR_print_errors_fp(stderr);
+    abort();
+}
+
+void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *outputFile, char *outputKeyFile) {
+    EVP_CIPHER_CTX *ctx;
+    int len;
+    int ciphertext_len;
+    std::string ciphertext;
+    unsigned char key[32]; // 256 bits
+    unsigned char iv[16];
+
+    if (!RAND_bytes(key, sizeof(key))) {
+        std::cout << "Error generating random key\n";
+        exit(1);
     }
 
-    char *pngName = argv[1];
-    int mode = std::atoi(argv[2]);
-    std::string message;
-    if (mode == 0) {
-        message = argv[3];
-    }   
+    if (!RAND_bytes(iv, sizeof(iv))) {
+        std::cout << "Error generating random IV\n";
+        exit(1);
+    }
+    
+    if(!(ctx = EVP_CIPHER_CTX_new())) {
+        handleEVPErrors();
+    }
 
-    std::ifstream img(pngName, std::ios::binary);
+    if(EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) != 1)
+        handleEVPErrors();
+
+    if(EVP_EncryptUpdate(ctx, (unsigned char *) ciphertext.data(), &len, message, msgLen) != 1) {
+        handleEVPErrors();
+    }
+        
+    ciphertext_len = len;
+    
+    if(EVP_EncryptFinal_ex(ctx, (unsigned char *) ciphertext.data() + len, &len) != 1) {     
+        handleEVPErrors();
+    }
+
+    ciphertext_len += len;
+
+    EVP_CIPHER_CTX_free(ctx);
+    
+    unsigned char keyMessage[48];
+    memcpy(keyMessage, key, sizeof(key));
+    memcpy(keyMessage + sizeof(key), iv, sizeof(iv));
+
+    steganographer(ENCODE, inputFile, (unsigned char *) ciphertext.data(), ciphertext_len, outputFile);
+    steganographer(ENCODE, inputFile, keyMessage, 48, outputKeyFile);
+}
+
+std::string decodeAES(char *inputFile, char *inputKeyFile) {
+    EVP_CIPHER_CTX *ctx;
+    int len;
+    int plaintext_len;
+    std::vector<uint8_t> ciphertext = steganographer(DECODE, inputFile, NULL, 0, NULL);
+    std::vector<uint8_t> keyMessageVector = steganographer(DECODE, inputKeyFile, NULL, 0, NULL);
+    std::vector<uint8_t> plaintext(ciphertext.size() + EVP_CIPHER_block_size(EVP_aes_256_cbc()));
+
+    unsigned char key[32]; // 256 bits
+    unsigned char iv[16];
+    memcpy(key, keyMessageVector.data(), sizeof(key));
+    memcpy(iv, keyMessageVector.data() + sizeof(key), sizeof(iv));
+
+    if(!(ctx = EVP_CIPHER_CTX_new())) {
+        handleEVPErrors();
+    }
+
+    if(EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) != 1) {
+        handleEVPErrors();
+    }
+        
+    if(EVP_DecryptUpdate(ctx, (unsigned char *) plaintext.data(), &len, (unsigned char *) ciphertext.data(), ciphertext.size()) != 1) {
+        handleEVPErrors();
+    }
+
+    plaintext_len = len;
+    
+    if(EVP_DecryptFinal_ex(ctx, (unsigned char *) plaintext.data() + len, &len) != 1) {
+        handleEVPErrors();
+    }
+
+    plaintext_len += len;
+    plaintext.resize(plaintext_len);
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    std::string plaintextStr(plaintext.begin(), plaintext.end());
+    return plaintextStr;
+}
+
+std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *message, int msgLen, char *outputFile) {
+    std::ifstream img(inputFile, std::ios::binary);
     if (!isFilePng(img)) {
         std::cout << "File is not a PNG\n";
         exit(0);
@@ -62,6 +156,7 @@ int main(int argc, char **argv) {
 
     if (chunkIHDR.colourWidth != 8 || chunkIHDR.colourType != 6) {
         std::cout << "Please select other PNG image!\n";
+        img.close();
         exit(0);
     }
     // THE 4 IS HARDCODED - PART OF COLOURTYPE 6
@@ -70,6 +165,7 @@ int main(int argc, char **argv) {
     uint32_t sizeIDAT;
     if (!findIDAT(img, &sizeIDAT)) {
         std::cout << "IDAT Chunk not found\n";
+        img.close();
         exit(0);
     }
 
@@ -87,26 +183,21 @@ int main(int argc, char **argv) {
 
     processFilter(decompressedData, scanlineLen, bytesPerPixel);
 
-    if (mode == 1) {
+    if (mode == DECODE) {
         //DECODE
-        decodeMessage(decompressedData, scanlineLen);
-        exit(0);
+        std::vector<uint8_t> output = decodeMessage(decompressedData, scanlineLen);
+        img.close();
+        return output;
     }
 
-    embedMessage(decompressedData, message, scanlineLen);
+    embedMessage(decompressedData, message, msgLen, scanlineLen);
     refilter(decompressedData, scanlineLen, bytesPerPixel);
 
     std::vector<uint8_t> recompressedData = compressIDATChunk(decompressedData);
-
-    // for (uint8_t c : recompressedData) {
-    //     std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c) << " ";
-    // }
-
-    // Consider finding max size
-
-    createPNG(recompressedData, pngName, img, IDATDataStartPos, sizeIDAT, maxOutputLen);
+    createPNG(recompressedData, inputFile, img, IDATDataStartPos, sizeIDAT, maxOutputLen, outputFile);
 
     img.close();
+    return {};
 }
 
 bool isFilePng(std::ifstream& img) {
@@ -311,28 +402,28 @@ void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPer
     free(orig);
 }
 
-void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineLen) {
+void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen) {
     // TODO: Correctly calculate this
-    if (data.size() <= message.length() * 8) {
+    if (data.size() <= msgLen * 8) {
         std::cout << "Message is too long!\n";
         exit(0);
     }
 
     std::vector<uint8_t> messageBits;
 
-    if (message.length() > 255) {
+    if (msgLen > 255) {
         std::cout << "Message is too long!\n";
         exit(0);
     }
 
-    uint8_t msgLen = message.length();
     for (int i = 7; i >= 0; i--) {
         messageBits.push_back((msgLen >> i) & 1);
     }
 
-    for (uint8_t c : message) {
+    for (int i = 0; i < msgLen; i++) {
+        uint8_t byte = message[i];
         for (int i = 7; i >= 0; i--) {
-            messageBits.push_back((c >> i) & 1);
+            messageBits.push_back((byte >> i) & 1);
         }
     }
 
@@ -346,10 +437,10 @@ void embedMessage(std::vector<uint8_t>& data, std::string message, int scanlineL
     }
 }
 
-void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen) {
+void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen, char *outputFileString) {
     // b indicates binary 
     FILE *original = fopen(originalFileName, "rb");
-    FILE *output = fopen("output.png", "wb");
+    FILE *output = fopen(outputFileString, "wb");
 
     // Go back to right before length bytes
     int headerSize = IDATDataStartPos - 8;
@@ -401,7 +492,7 @@ void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img) {
     }
 }
 
-void decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen) {
+std::vector<uint8_t> decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen) {
     uint8_t messageLenByte = 0;
 
     for (int i = 1; i <= 8; i++) {
@@ -429,6 +520,5 @@ void decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen) {
         messageVec.push_back(letter);
     }
 
-    std::string messageString = std::string(messageVec.begin(), messageVec.end());
-    std::cout << messageString << '\n';
+    return messageVec;
 }
