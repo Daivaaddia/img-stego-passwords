@@ -12,7 +12,7 @@
 #include <openssl/conf.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
-#include "encoder.h"
+#include "stego.h"
 
 #define PNG_MAGIC 0x0a1a0a0d474e5089
 
@@ -57,7 +57,7 @@ void handleEVPErrors(void) {
     abort();
 }
 
-void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *outputFile, char *outputKeyFile) {
+void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *outputFile, char *inputKeyFile, char *outputKeyFile) {
     EVP_CIPHER_CTX *ctx;
     int len;
     int ciphertext_len;
@@ -101,7 +101,7 @@ void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *output
     memcpy(keyMessage + sizeof(key), iv, sizeof(iv));
 
     steganographer(ENCODE, inputFile, (unsigned char *) ciphertext.data(), ciphertext_len, outputFile);
-    steganographer(ENCODE, inputFile, keyMessage, 48, outputKeyFile);
+    steganographer(ENCODE, inputKeyFile, keyMessage, 48, outputKeyFile);
 }
 
 std::string decodeAES(char *inputFile, char *inputKeyFile) {
@@ -403,18 +403,12 @@ void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPer
 }
 
 void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen) {
-    // TODO: Correctly calculate this
     if (data.size() <= msgLen * 8) {
         std::cout << "Message is too long!\n";
         exit(0);
     }
 
     std::vector<uint8_t> messageBits;
-
-    if (msgLen > 255) {
-        std::cout << "Message is too long!\n";
-        exit(0);
-    }
 
     for (int i = 7; i >= 0; i--) {
         messageBits.push_back((msgLen >> i) & 1);
@@ -473,7 +467,6 @@ void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std:
     // headerSize + length + type + data + crc + length difference
     int currFileIndex = headerSize + 4 + 4 + length + 4 + (originalIDATChunkSize - length);
 
-    //processRestOfFile(img, output, &currFileIndex, maxOutputLen);
     img.seekg(currFileIndex, std::ios::beg);
 
     char byte;

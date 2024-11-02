@@ -1,4 +1,4 @@
-#include "encoder.h"
+#include "stego.h"
 #include <iostream>
 #include <string>
 
@@ -15,15 +15,16 @@ int main(int argc, char **argv) {
         if (encodingOption == PLAINTEXT_MODE) {
             encodePlaintext(inputFile, (unsigned char *) message.data(), msgLen, outputFile);
         } else if (encodingOption == AES_MODE) {
-            char *outputKeyFile = argv[6];
-            encodeAES(inputFile, (unsigned char *) message.data(), msgLen, outputFile, outputKeyFile);
+            char *inputKeyFile = argv[6];
+            char *outputKeyFile = argv[7];
+            encodeAES(inputFile, (unsigned char *) message.data(), msgLen, outputFile, inputKeyFile, outputKeyFile);
         }
     } else if (mode == DECODE) {
-        char *inputKeyFile = argv[4];
         std::string output;
         if (encodingOption == PLAINTEXT_MODE) {
             output = decodePlaintext(inputFile);
         } else if (encodingOption == AES_MODE) {
+            char *inputKeyFile = argv[4];
             output = decodeAES(inputFile, inputKeyFile);
         }
         

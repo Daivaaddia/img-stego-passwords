@@ -5,7 +5,7 @@
 
 void encodePlaintext(char *inputFile, unsigned char *message, int msgLen, char *outputFile);
 std::string decodePlaintext(char *inputFile);
-void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *outputFile, char *outputKeyFile);
+void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *outputFile, char *inputKeyFile, char *outputKeyFile);
 std::string decodeAES(char *inputFile, char *inputKeyFile);
 
 const int ENCODE = 0;
