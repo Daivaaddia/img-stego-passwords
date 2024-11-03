@@ -631,15 +631,8 @@ void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std:
     uint32_t crcBigEndian = __builtin_bswap32(crc);
     fwrite(&crcBigEndian, sizeof(uint32_t), 1, output);
 
-    // headerSize + length + type + data + crc + length difference
-    int currFileIndex = headerSize + 4 + 4 + length + 4 + (originalIDATChunkSize - length);
-
-    img.seekg(currFileIndex, std::ios::beg);
-
-    char byte;
-    while (img.get(byte)) {
-        fwrite(&byte, sizeof(char), 1, output);
-    }
+    uint8_t endBytes[] = {0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+    fwrite(endBytes, sizeof(uint8_t), sizeof(endBytes), output);
 
     free(buffer);
 }
