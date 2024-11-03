@@ -27,17 +27,25 @@ typedef struct ChunkIHDR {
 } ChunkIHDR;
 
 std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *message, int msgLen, char *outputFile);
+
 bool isFilePng(std::ifstream& img);
 void parseIHDR(std::ifstream& img, ChunkIHDR *chunk);
 int findIDAT(std::ifstream& img, uint32_t *sizeIDAT);
 std::vector<uint8_t> readIDATChunk(std::ifstream& img, size_t len);
 std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, int maxOutputLen);
 std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData);
+
 void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
 void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
-void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen);
+void processFilterUp(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
+void processFilterAvg(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
+
 void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
-void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
+void refilterSub(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
+void refilterUp(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
+void refilterAvg(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
+
+void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen);
 void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen, char *outputFileString);
 void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img);
 std::vector<uint8_t> decodeMessage(std::vector<uint8_t>& decompressedData, int scanlineLen);
@@ -287,12 +295,14 @@ std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, in
     ret = inflate(&inflateStream, Z_SYNC_FLUSH);
     if (ret != Z_OK && ret != Z_STREAM_END) {
         printf("Error: inflate returned %d\n", ret);
+        free(buffer);
         inflateEnd(&inflateStream);
         exit(0);
     }
 
     if (inflateStream.avail_in != 0) {
         printf("Error: inflate did not consume all input\n");
+        free(buffer);
         inflateEnd(&inflateStream);
         exit(0);
     }
@@ -351,8 +361,14 @@ void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixe
             case 1:
                 processFilterSub(data, i + 1, scanlineLen, bytesPerPixel);
                 break;
+            case 2:
+                processFilterUp(data, i + 1, scanlineLen, bytesPerPixel);
+                break;
+            case 3:
+                processFilterAvg(data, i + 1, scanlineLen, bytesPerPixel);
+                break;
             default:
-                std::cout << "Unimplemented filter type: " << (int) data[i] << '\n';
+                std::cout << "Unimplemented filter type while unfiltering: " << (int) data[i] << '\n';
                 exit(0);
         }
     }
@@ -370,25 +386,64 @@ void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int byt
     }
 }
 
+void processFilterUp(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
+    if (startPos < len) {
+        return;
+    }
+
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        uint8_t prevPixelUp = data[i - len];
+        data[i] += prevPixelUp;
+    }
+}
+
+void processFilterAvg(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
+    if (startPos < len) {
+        return;
+    }
+
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        uint8_t average;
+        uint8_t prevPixelUp = data[i - len];
+
+        if (i < startPos + bytesPerPixel) {
+            average = prevPixelUp / 2;
+        } else {
+            uint8_t prevPixel = data[i - bytesPerPixel];
+            average = (prevPixel + prevPixelUp) / 2;
+        } 
+
+        data[i] += average;
+    }
+}
+
 void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel) {
+    uint8_t *orig = (uint8_t *)malloc(data.size());
+    memcpy(orig, data.data(), data.size());
+
     for (int i = 0; i < data.size(); i += scanlineLen) {
         switch (data[i]) {
             case 0:
                 break;
             case 1:
-                refilterSub(data, i + 1, scanlineLen, bytesPerPixel);
+                refilterSub(data, orig, i + 1, scanlineLen, bytesPerPixel);
+                break;
+            case 2:
+                refilterUp(data, orig, i + 1, scanlineLen, bytesPerPixel);
+                break;
+            case 3:
+                refilterAvg(data, orig,  i + 1, scanlineLen, bytesPerPixel);
                 break;
             default:
-                std::cout << "Unimplemented filter type: " << (int) data[i] << '\n';
+                std::cout << "Unimplemented filter type while refiltering: " << (int) data[i] << '\n';
                 exit(0);
         }
     }
+
+    free(orig);
 }
 
-void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
-    uint8_t *orig = (uint8_t *)malloc(data.size());
-    memcpy(orig, data.data(), data.size());
-    
+void refilterSub(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel) {
     // start on 2nd image pixel
     for (int i = startPos; i < startPos + len - 1; i++) {
         if (i < startPos + bytesPerPixel) {
@@ -398,8 +453,37 @@ void refilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPer
         uint8_t prevPixel = orig[i - bytesPerPixel];
         data[i] -= prevPixel;
     }
+}
 
-    free(orig);
+void refilterUp(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel) {
+    if (startPos < len) {
+        return;
+    }
+    
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        uint8_t prevPixelUp = orig[i - len];
+        data[i] -= prevPixelUp;
+    }
+}
+
+void refilterAvg(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel) {
+    if (startPos < len) {
+        return;
+    }
+
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        uint8_t average;
+        uint8_t prevPixelUp = orig[i - len];
+
+        if (i < startPos + bytesPerPixel) {
+            average = prevPixelUp / 2;
+        } else {
+            uint8_t prevPixel = orig[i - bytesPerPixel];
+            average = (prevPixel + prevPixelUp) / 2;
+        } 
+
+        data[i] -= average;
+    }
 }
 
 void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen) {
@@ -473,6 +557,8 @@ void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std:
     while (img.get(byte)) {
         fwrite(&byte, sizeof(char), 1, output);
     }
+
+    free(buffer);
 }
 
 void readRestIDATs(std::vector<uint8_t>& compressedData, std::ifstream& img) {
