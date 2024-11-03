@@ -28,6 +28,6 @@ int main(int argc, char **argv) {
             output = decodeAES(inputFile, inputKeyFile);
         }
         
-        std::cout << output << '\n';
+        std::cout << output;
     }
 }

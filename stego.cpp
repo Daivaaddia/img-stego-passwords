@@ -72,7 +72,7 @@ void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *output
     EVP_CIPHER_CTX *ctx;
     int len;
     int ciphertext_len;
-    std::string ciphertext;
+    std::vector<uint8_t> ciphertext(msgLen + EVP_CIPHER_block_size(EVP_aes_256_cbc()));
     unsigned char key[32]; // 256 bits
     unsigned char iv[16];
 
@@ -96,7 +96,7 @@ void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *output
     if(EVP_EncryptUpdate(ctx, (unsigned char *) ciphertext.data(), &len, message, msgLen) != 1) {
         handleEVPErrors();
     }
-        
+
     ciphertext_len = len;
     
     if(EVP_EncryptFinal_ex(ctx, (unsigned char *) ciphertext.data() + len, &len) != 1) {     
@@ -104,6 +104,7 @@ void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *output
     }
 
     ciphertext_len += len;
+    ciphertext.resize(ciphertext_len);
 
     EVP_CIPHER_CTX_free(ctx);
     
@@ -569,7 +570,7 @@ void refilterPaeth(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int 
 }
 
 void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen) {
-    if (data.size() <= msgLen * 8) {
+    if (msgLen * 8 >= data.size() - (data.size() / scanlineLen)) {
         std::cerr << "Message is too long!\n";
         exit(1);
     }
