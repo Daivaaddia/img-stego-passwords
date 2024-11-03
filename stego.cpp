@@ -77,12 +77,12 @@ void encodeAES(char *inputFile, unsigned char *message, int msgLen, char *output
     unsigned char iv[16];
 
     if (!RAND_bytes(key, sizeof(key))) {
-        std::cout << "Error generating random key\n";
+        std::cerr << "Error generating random key\n";
         exit(1);
     }
 
     if (!RAND_bytes(iv, sizeof(iv))) {
-        std::cout << "Error generating random IV\n";
+        std::cerr << "Error generating random IV\n";
         exit(1);
     }
     
@@ -158,7 +158,7 @@ std::string decodeAES(char *inputFile, char *inputKeyFile) {
 std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *message, int msgLen, char *outputFile) {
     std::ifstream img(inputFile, std::ios::binary);
     if (!isFilePng(img)) {
-        std::cout << "File is not a PNG\n";
+        std::cerr << "File is not a PNG\n";
         exit(1);
     }
 
@@ -166,7 +166,7 @@ std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *me
     parseIHDR(img, &chunkIHDR);
 
     if (chunkIHDR.colourWidth != 8) {
-        std::cout << "Please select other PNG image!\n";
+        std::cerr << "Please select other PNG image!\n";
         img.close();
         exit(1);
     }
@@ -186,13 +186,13 @@ std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *me
             bytesPerPixel = 4;
             break;
         default:
-            std::cout << "Unimplemented colour type: " << chunkIHDR.colourType << '\n';
+            std::cerr << "Unimplemented colour type: " << chunkIHDR.colourType << '\n';
             exit(1);
     }
 
     uint32_t sizeIDAT;
     if (!findIDAT(img, &sizeIDAT)) {
-        std::cout << "IDAT Chunk not found\n";
+        std::cerr << "IDAT Chunk not found\n";
         img.close();
         exit(0);
     }
@@ -240,7 +240,7 @@ void parseIHDR(std::ifstream& img, ChunkIHDR *chunk) {
     chunkSize = __builtin_bswap32(chunkSize);
 
     if (chunkSize != 13) {
-        std::cout << "IHDR Chunk not of expected size: " << chunkSize << '\n';
+        std::cerr << "IHDR Chunk not of expected size: " << chunkSize << '\n';
         exit(1);
     }
     // Jump over IHDR
@@ -295,13 +295,12 @@ std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, in
     z_stream inflateStream;
     memset(&inflateStream, 0, sizeof(z_stream));
 
-    // Bytef is just a typedef for an uint8_t
     inflateStream.avail_in = compressedData.size();
     inflateStream.next_in = compressedData.data();
 
     int ret = inflateInit(&inflateStream) ;
     if (ret != Z_OK) {
-        std::cout << "Error with inflateInit: " << ret << '\n';
+        std::cerr << "Error with inflateInit: " << ret << '\n';
         exit(1);
     }
 
@@ -339,13 +338,12 @@ std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData) {
     z_stream deflateStream;
     memset(&deflateStream, 0, sizeof(z_stream));
 
-    // Bytef is just a typedef for an uint8_t
     deflateStream.avail_in = decompressedData.size();
     deflateStream.next_in = decompressedData.data();
 
     int ret = deflateInit(&deflateStream, Z_DEFAULT_COMPRESSION);
     if (ret != Z_OK) {
-        std::cout << "Error with deflateInit: " << ret << '\n';
+        std::cerr << "Error with deflateInit: " << ret << '\n';
         exit(1);
     }
 
@@ -390,7 +388,7 @@ void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixe
                 processFilterPaeth(data, i + 1, scanlineLen, bytesPerPixel);
                 break;
             default:
-                std::cout << "Unimplemented filter type while unfiltering: " << (int) data[i] << '\n';
+                std::cerr << "Unimplemented filter type while unfiltering: " << (int) data[i] << '\n';
                 exit(1);
         }
     }
@@ -497,7 +495,7 @@ void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel) {
                 refilterPaeth(data, orig, i + 1, scanlineLen, bytesPerPixel);
                 break;
             default:
-                std::cout << "Unimplemented filter type while refiltering: " << (int) data[i] << '\n';
+                std::cerr << "Unimplemented filter type while refiltering: " << (int) data[i] << '\n';
                 exit(1);
         }
     }
@@ -572,7 +570,7 @@ void refilterPaeth(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int 
 
 void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen) {
     if (data.size() <= msgLen * 8) {
-        std::cout << "Message is too long!\n";
+        std::cerr << "Message is too long!\n";
         exit(1);
     }
 
