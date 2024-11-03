@@ -39,11 +39,14 @@ void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixe
 void processFilterSub(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
 void processFilterUp(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
 void processFilterAvg(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
+uint8_t paethPredictor(uint8_t left, uint8_t above, uint8_t upperLeft);
+void processFilterPaeth(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel);
 
 void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel);
 void refilterSub(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
 void refilterUp(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
 void refilterAvg(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
+void refilterPaeth(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel);
 
 void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen);
 void createPNG(std::vector<uint8_t> compressedData, char *originalFileName, std::ifstream& img, int IDATDataStartPos, uint32_t originalIDATChunkSize, int maxOutputLen, char *outputFileString);
@@ -156,19 +159,36 @@ std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *me
     std::ifstream img(inputFile, std::ios::binary);
     if (!isFilePng(img)) {
         std::cout << "File is not a PNG\n";
-        exit(0);
+        exit(1);
     }
 
     ChunkIHDR chunkIHDR;
     parseIHDR(img, &chunkIHDR);
 
-    if (chunkIHDR.colourWidth != 8 || chunkIHDR.colourType != 6) {
+    if (chunkIHDR.colourWidth != 8) {
         std::cout << "Please select other PNG image!\n";
         img.close();
-        exit(0);
+        exit(1);
     }
-    // THE 4 IS HARDCODED - PART OF COLOURTYPE 6
-    int bytesPerPixel = chunkIHDR.colourWidth * 4 / 8;
+
+    int bytesPerPixel;
+    switch(chunkIHDR.colourType) {
+        case 0:
+            bytesPerPixel = 1;
+            break;
+        case 2:
+            bytesPerPixel = 3;
+            break;
+        case 4:
+            bytesPerPixel = 2;
+            break;
+        case 6:
+            bytesPerPixel = 4;
+            break;
+        default:
+            std::cout << "Unimplemented colour type: " << chunkIHDR.colourType << '\n';
+            exit(1);
+    }
 
     uint32_t sizeIDAT;
     if (!findIDAT(img, &sizeIDAT)) {
@@ -186,8 +206,7 @@ std::vector<uint8_t> steganographer(int mode, char *inputFile, unsigned char *me
     std::vector<uint8_t> decompressedData = decompressIDATChunk(compressedData, maxOutputLen);
 
     // + 1 for filter byte
-    // THE 4 IS HARDCODED - PART OF COLOURTYPE 6
-    int scanlineLen = (chunkIHDR.width * 4) + 1;
+    int scanlineLen = (chunkIHDR.width * bytesPerPixel) + 1;
 
     processFilter(decompressedData, scanlineLen, bytesPerPixel);
 
@@ -222,7 +241,7 @@ void parseIHDR(std::ifstream& img, ChunkIHDR *chunk) {
 
     if (chunkSize != 13) {
         std::cout << "IHDR Chunk not of expected size: " << chunkSize << '\n';
-        exit(0);
+        exit(1);
     }
     // Jump over IHDR
     img.seekg(4, std::ios::cur);
@@ -283,7 +302,7 @@ std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, in
     int ret = inflateInit(&inflateStream) ;
     if (ret != Z_OK) {
         std::cout << "Error with inflateInit: " << ret << '\n';
-        exit(0);
+        exit(1);
     }
 
     int bufferLen = maxOutputLen;
@@ -297,14 +316,14 @@ std::vector<uint8_t> decompressIDATChunk(std::vector<uint8_t> compressedData, in
         printf("Error: inflate returned %d\n", ret);
         free(buffer);
         inflateEnd(&inflateStream);
-        exit(0);
+        exit(1);
     }
 
     if (inflateStream.avail_in != 0) {
         printf("Error: inflate did not consume all input\n");
         free(buffer);
         inflateEnd(&inflateStream);
-        exit(0);
+        exit(1);
     }
 
     decompressedData.insert(decompressedData.end(), buffer, buffer + (bufferLen - inflateStream.avail_out));
@@ -327,7 +346,7 @@ std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData) {
     int ret = deflateInit(&deflateStream, Z_DEFAULT_COMPRESSION);
     if (ret != Z_OK) {
         std::cout << "Error with deflateInit: " << ret << '\n';
-        exit(0);
+        exit(1);
     }
 
     int bufferLen = decompressedData.size();
@@ -342,7 +361,7 @@ std::vector<uint8_t> compressIDATChunk(std::vector<uint8_t> decompressedData) {
             printf("Error: deflate returned %d\n", ret);
             free(buffer);
             deflateEnd(&deflateStream);
-            exit(0);
+            exit(1);
         }
 
         compressedData.insert(compressedData.end(), buffer, buffer + (bufferLen - deflateStream.avail_out));
@@ -367,9 +386,12 @@ void processFilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixe
             case 3:
                 processFilterAvg(data, i + 1, scanlineLen, bytesPerPixel);
                 break;
+            case 4:
+                processFilterPaeth(data, i + 1, scanlineLen, bytesPerPixel);
+                break;
             default:
                 std::cout << "Unimplemented filter type while unfiltering: " << (int) data[i] << '\n';
-                exit(0);
+                exit(1);
         }
     }
 }
@@ -417,6 +439,43 @@ void processFilterAvg(std::vector<uint8_t>& data, int startPos, int len, int byt
     }
 }
 
+uint8_t paethPredictor(uint8_t left, uint8_t above, uint8_t upperLeft) {
+    int p = left + above - upperLeft;
+    int pLeft = abs(p - left);
+    int pAbove = abs(p - above);
+    int pUpperLeft = abs(p - upperLeft);
+
+    if (pLeft <= pAbove && pLeft <= pUpperLeft) {
+        return left;
+    } else if (pAbove <= pUpperLeft) {
+        return above;
+    } else {
+        return upperLeft;
+    }
+}
+
+void processFilterPaeth(std::vector<uint8_t>& data, int startPos, int len, int bytesPerPixel) {
+    if (startPos < len) {
+        return;
+    }
+
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        uint8_t prevPixel;
+        uint8_t prevPixelUpLeft;
+        uint8_t prevPixelUp = data[i - len];
+
+        if (i < startPos + bytesPerPixel) {
+            prevPixel = 0;
+            prevPixelUpLeft = 0;
+        } else {
+            prevPixel = data[i - bytesPerPixel];
+            prevPixelUpLeft = data[i - len - bytesPerPixel];
+        }
+
+        data[i] += paethPredictor(prevPixel, prevPixelUp, prevPixelUpLeft);
+    }
+}
+
 void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel) {
     uint8_t *orig = (uint8_t *)malloc(data.size());
     memcpy(orig, data.data(), data.size());
@@ -434,9 +493,12 @@ void refilter(std::vector<uint8_t>& data, int scanlineLen, int bytesPerPixel) {
             case 3:
                 refilterAvg(data, orig,  i + 1, scanlineLen, bytesPerPixel);
                 break;
+            case 4:
+                refilterPaeth(data, orig, i + 1, scanlineLen, bytesPerPixel);
+                break;
             default:
                 std::cout << "Unimplemented filter type while refiltering: " << (int) data[i] << '\n';
-                exit(0);
+                exit(1);
         }
     }
 
@@ -486,10 +548,32 @@ void refilterAvg(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int le
     }
 }
 
+void refilterPaeth(std::vector<uint8_t>& data, uint8_t *orig, int startPos, int len, int bytesPerPixel) {
+    if (startPos < len) {
+        return;
+    }
+
+    for (int i = startPos; i < startPos + len - 1; i++) {
+        uint8_t prevPixel;
+        uint8_t prevPixelUpLeft;
+        uint8_t prevPixelUp = orig[i - len];
+
+        if (i < startPos + bytesPerPixel) {
+            prevPixel = 0;
+            prevPixelUpLeft = 0;
+        } else {
+            prevPixel = orig[i - bytesPerPixel];
+            prevPixelUpLeft = orig[i - len - bytesPerPixel];
+        }
+
+        data[i] -= paethPredictor(prevPixel, prevPixelUp, prevPixelUpLeft);
+    }
+}
+
 void embedMessage(std::vector<uint8_t>& data, unsigned char *message, int msgLen, int scanlineLen) {
     if (data.size() <= msgLen * 8) {
         std::cout << "Message is too long!\n";
-        exit(0);
+        exit(1);
     }
 
     std::vector<uint8_t> messageBits;
